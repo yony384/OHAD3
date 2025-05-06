@@ -26,6 +26,6 @@ class HelpCommand(commands.Cog):
 
         await ctx.send(embed=embed)
 
-# רישום ה-Cog
-def setup(bot):
-    bot.add_cog(HelpCommand(bot))
+# רישום ה-Cog בצורה אסינכרונית
+async def setup(bot):
+    await bot.add_cog(HelpCommand(bot))
