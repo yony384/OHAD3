@@ -40,30 +40,30 @@ async def update_stats():
                 if member.id not in client.message_stats[guild.id]:
                     client.message_stats[guild.id][member.id] = {"messages": 0, "voice_time": 0}
                 
-# אירועים לעדכון הודעות
-@client.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    if message.guild:
-        client.message_stats[message.guild.id][message.author.id]["messages"] += 1
-    update_guild_data()
+                # כל פעם שמישהו שולח הודעה
+                @client.event
+                async def on_message(message):
+                    if message.author.bot:
+                        return
+                    if message.guild.id == guild.id:
+                        client.message_stats[guild.id][message.author.id]["messages"] += 1
+                    update_guild_data()
 
-# אירועים לעדכון זמן ב-voice
-@client.event
-async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
-    if member.guild:
-        if after.channel is not None and before.channel is None:
-            client.voice_stats[member.guild.id][member.id] = datetime.datetime.now()
-        elif after.channel is None and before.channel is not None:
-            entry_time = client.voice_stats[member.guild.id].get(member.id)
-            if entry_time:
-                delta = datetime.datetime.now() - entry_time
-                client.message_stats[member.guild.id][member.id]["voice_time"] += delta.total_seconds()
-            del client.voice_stats[member.guild.id][member.id]
-        update_guild_data()
+                # עדכון זמן שהייה ב-voice
+                @client.event
+                async def on_voice_state_update(member, before, after):
+                    if not member.bot and member.guild.id == guild.id:
+                        # אם נכנס לחדר קול
+                        if after.channel is not None and before.channel is None:
+                            client.voice_stats[guild.id][member.id] = datetime.datetime.now()
+                        # אם יצא מחדר קול
+                        if after.channel is None and before.channel is not None:
+                            entry_time = client.voice_stats[guild.id].get(member.id)
+                            if entry_time:
+                                delta = datetime.datetime.now() - entry_time
+                                client.message_stats[guild.id][member.id]["voice_time"] += delta.total_seconds()
+                            del client.voice_stats[guild.id][member.id]
+                        update_guild_data()
 
 # איפוס ביום שבת בחצות
 @tasks.loop(hours=24)
@@ -76,9 +76,11 @@ async def reset_weekly_stats():
         print("Stats reset to start a new week.")
     await sleep(60)  # נמתין 60 שניות כדי לבדוק כל 60 שניות
 
-# הפעלת הלולאות
-update_stats.start()
-reset_weekly_stats.start()
+# הפעלת הבוט
+@client.event
+async def on_ready():
+    update_stats.start()
+    reset_weekly_stats.start()
 
 # טוען את כל ה-cogs מהתיקייה
 for filename in os.listdir('./cogs'):
