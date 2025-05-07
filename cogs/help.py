@@ -16,11 +16,9 @@ class HelpCommand(commands.Cog):
 
         # סריקה אוטומטית של כל הפקודות
         for command in self.bot.commands:
-            command_obj = self.bot.get_command(command)
-            # הוספת הפקודה לאמבד
             embed.add_field(
-                name=f"!{command}",
-                value=command_obj.help or "No description available.",
+                name=f"!{command.name}",
+                value=command.help or "No description available.",
                 inline=False
             )
 
