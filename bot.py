@@ -3,10 +3,8 @@ from discord.ext import commands, tasks
 from discord.ext.commands import has_permissions
 import json
 import os
-from dotenv import load_dotenv
 from datetime import datetime
 
-load_dotenv()
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
