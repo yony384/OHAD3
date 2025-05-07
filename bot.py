@@ -1,156 +1,151 @@
 import discord
 from discord.ext import commands
 import json
-import os
 from datetime import datetime
-import threading
-import socket
+import os
 
-# יצירת הבוט
+# הגדרת הבוט וההגדרות
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-intents.voice_states = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.guilds = True
+intents.guild_messages = True
+intents.guild_members = True
+intents.message_content = True
+client = commands.Bot(command_prefix='!', intents=intents)
 
-# נתיב לקובץ ה-JSON
-stats_file = 'stats.json'
+# משתנים עיקריים
+protection = {}  # מערך הגנה לכל שרת
+data = {}  # נתוני סטטיסטיקות לכל המשתמשים
 
-# יצירת הקובץ אם לא קיים
-if not os.path.exists(stats_file):
-    with open(stats_file, 'w') as f:
-        json.dump({}, f)
+# קובץ שמכיל את הנתונים
+STATS_FILE = 'stats.json'
+PROTECTION_FILE = 'protection.json'
+LOGS_FILE = 'logs.json'
 
-# פקודת !stats
-@bot.command(name='stats')
-async def stats(ctx):
-    with open(stats_file, 'r') as f:
-        stats = json.load(f)
+# קריאת נתוני המשתמשים
+def load_data():
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-    guild_id = str(ctx.guild.id)
-    user_id = str(ctx.author.id)
+# שמירת נתוני המשתמשים
+def save_data():
+    with open(STATS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
-    user_stats = stats.get(guild_id, {}).get(user_id, {'messages': 0, 'voice_time': 0})
+# קריאת נתוני הגנת שרת
+def load_protection():
+    if os.path.exists(PROTECTION_FILE):
+        with open(PROTECTION_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-    # המרה לפורמט קריא
-    total_seconds = user_stats['voice_time']
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-    formatted_time = f"{hours} שעות, {minutes} דקות, {seconds} שניות"
+# שמירת הגנת שרת
+def save_protection():
+    with open(PROTECTION_FILE, 'w') as f:
+        json.dump(protection, f, indent=2)
 
-    embed = discord.Embed(
-        title="הסטטיסטיקות שלך",
-        description=f"סטטיסטיקות עבור {ctx.author.display_name}",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="הודעות שנשלחו", value=str(user_stats['messages']), inline=False)
-    embed.add_field(name="זמן ב-voice", value=formatted_time, inline=False)
-
-    await ctx.send(embed=embed)
-
-# פקודת !open_ticket
-@bot.command(name='open_ticket')
-async def open_ticket(ctx):
-    category = discord.utils.get(ctx.guild.categories, name='Tickets')
-    if not category:
-        category = await ctx.guild.create_category('Tickets')
-
-    overwrites = {
-        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        ctx.author: discord.PermissionOverwrite(read_messages=True)
+# פונקציה שמבצעת גיבוי של מבנה השרת
+def backup_server(guild):
+    backup = {
+        'channels': []
     }
-    channel = await category.create_text_channel(f'ticket-{ctx.author.name}', overwrites=overwrites)
-    await channel.send(f"שלום {ctx.author.mention}, הטיקט שלך נפתח. איך אפשר לעזור לך?")
+    for channel in guild.channels:
+        backup['channels'].append({
+            'name': channel.name,
+            'type': channel.type,
+            'parent': channel.category_id,
+            'permission_overwrites': [{
+                'id': perm.id,
+                'allow': perm.allow.value,
+                'deny': perm.deny.value
+            } for perm in channel.permission_overwrites]
+        })
+    with open(f'backups/{guild.id}.json', 'w') as f:
+        json.dump(backup, f, indent=2)
 
-# פקודת !help
-@bot.command(name='show_help')
-async def show_help_command(ctx):
-    show_help_message = """
-    פקודות זמינות:
-    !stats - הצגת סטטיסטיקות הודעות וזמן ב-voice.
-    !open_ticket - פתיחת טיקט חדש.
-    !ping - בדיקת תגובה.
-    !help - הצגת פקודות זמינות.
-    """
-    await ctx.send(show_help_message)
+# יצירת חדר "logs" אם לא קיים
+async def ensure_log_channel(guild):
+    log_channel = discord.utils.get(guild.text_channels, name='logs')
+    if not log_channel:
+        log_channel = await guild.create_text_channel('logs')
+    return log_channel
 
-# פקודת !ping
-@bot.command(name='ping')
-async def ping(ctx):
-    await ctx.send(f'פינג: {round(bot.latency * 1000)}ms')
+# רישום פעולות בלוג
+async def log_event(guild, content):
+    log_channel = await ensure_log_channel(guild)
+    await log_channel.send(content)
 
-# מעקב אחרי הודעות
-@bot.event
-async def on_message(message):
-    if message.author.bot:
+# הפעלת הגנה
+@client.command()
+async def enable(ctx):
+    protection[ctx.guild.id] = {"protectionEnabled": True}
+    save_protection()
+    await ctx.send("🛡️ ההגנה הופעלה.")
+
+# כיבוי הגנה
+@client.command()
+async def disable(ctx):
+    protection[ctx.guild.id] = {"protectionEnabled": False}
+    save_protection()
+    await ctx.send("🛑 ההגנה כובתה.")
+
+# פקודת סטטיסטיקות
+@client.command()
+async def stats(ctx):
+    user_id = str(ctx.author.id)
+    if user_id not in data:
+        await ctx.send("אין נתונים למשתמש זה.")
         return
+    
+    user_data = data[user_id]
+    voice_time = 0
+    if 'voiceJoinTime' in user_data:
+        current_time = datetime.now().timestamp()
+        voice_time = int(current_time - user_data['voiceJoinTime']) // 60  # בדקות
+    
+    total_messages = user_data.get('messages', 0)
+    await ctx.send(f"{ctx.author.mention} - מספר הודעות: {total_messages}, זמן ב-voice: {voice_time} דקות")
 
-    with open(stats_file, 'r') as f:
-        stats = json.load(f)
+# פקודת פתיחת טיקט
+@client.command()
+async def open(ctx):
+    embed = discord.Embed(title="פתיחת טיקט", description="לחץ על הכפתור למטה כדי לפתוח טיקט", color=discord.Color.blue())
+    button = discord.ui.Button(label="📩 פתח טיקט", style=discord.ButtonStyle.primary, custom_id="create_ticket")
+    view = discord.ui.View(timeout=None)
+    view.add_item(button)
+    await ctx.send(embed=embed, view=view)
 
-    guild_id = str(message.guild.id)
-    user_id = str(message.author.id)
+# לוגיקה של כפתור פתיחת טיקט
+@client.event
+async def on_interaction(interaction):
+    if interaction.custom_id == 'create_ticket':
+        # יצירת טיקט חדש (הוספת הודעה או יצירת חדר חדש)
+        ticket_channel = await interaction.guild.create_text_channel(f"ticket-{interaction.user.name}")
+        await ticket_channel.send(f"טיקט נפתח עבור {interaction.user.mention}")
+        await interaction.response.send_message(f"טיקט נפתח בהצלחה: {ticket_channel.mention}", ephemeral=True)
 
-    if guild_id not in stats:
-        stats[guild_id] = {}
+# זיהוי ניוק
+@client.event
+async def on_guild_channel_create(channel):
+    if protection.get(channel.guild.id, {}).get("protectionEnabled"):
+        await log_event(channel.guild, f"🎯 נוצר חדר: {channel.name}")
 
-    if user_id not in stats[guild_id]:
-        stats[guild_id][user_id] = {'messages': 0, 'voice_time': 0, 'joined_at': None}
+@client.event
+async def on_guild_channel_delete(channel):
+    if protection.get(channel.guild.id, {}).get("protectionEnabled"):
+        await log_event(channel.guild, f"⚠️ נמחק חדר: {channel.name}")
 
-    stats[guild_id][user_id]['messages'] += 1
+@client.event
+async def on_member_ban(guild, user):
+    if protection.get(guild.id, {}).get("protectionEnabled"):
+        await log_event(guild, f"👤 {user} הושעה.")
 
-    with open(stats_file, 'w') as f:
-        json.dump(stats, f)
+@client.event
+async def on_member_unban(guild, user):
+    if protection.get(guild.id, {}).get("protectionEnabled"):
+        await log_event(guild, f"👤 {user} הוסר מההרשעה.")
 
-    await bot.process_commands(message)
-
-# מעקב אחרי זמן ב-voice
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
-
-    with open(stats_file, 'r') as f:
-        stats = json.load(f)
-
-    guild_id = str(member.guild.id)
-    user_id = str(member.id)
-
-    if guild_id not in stats:
-        stats[guild_id] = {}
-
-    if user_id not in stats[guild_id]:
-        stats[guild_id][user_id] = {'messages': 0, 'voice_time': 0, 'joined_at': None}
-
-    user_stats = stats[guild_id][user_id]
-
-    # נכנס לערוץ
-    if after.channel and not before.channel:
-        user_stats['joined_at'] = datetime.now().timestamp()
-
-    # יצא מהערוץ
-    if not after.channel and before.channel and user_stats.get('joined_at'):
-        join_time = user_stats['joined_at']
-        session_duration = int(datetime.now().timestamp() - join_time)
-        user_stats['voice_time'] += session_duration
-        user_stats['joined_at'] = None
-
-    stats[guild_id][user_id] = user_stats
-
-    with open(stats_file, 'w') as f:
-        json.dump(stats, f)
-
-# פתיחת פורט ל-Render
-def keep_port_open():
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('0.0.0.0', 8080))
-    s.listen(1)
-    while True:
-        conn, addr = s.accept()
-        conn.close()
-
-threading.Thread(target=keep_port_open, daemon=True).start()
-
-# הפעלת הבוט (שנה את הטוקן שלך פה אם צריך)
-bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
+# הפעלת הבוט
+client.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
