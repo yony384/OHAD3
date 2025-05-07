@@ -2,25 +2,33 @@ import discord
 from discord.ext import commands, tasks
 import json
 import asyncio
-import datetime
 
+# הגדרות בסיסיות
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.members = True
+intents.presences = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-# הגדרת קובץ rooms.json לשמירת חדרים
+# קובץ הנתונים
+stats_file = "stats.json"
 rooms_file = "rooms.json"
-logs_channel_id = None  # נמלא את זה לפי הצורך בהגדרת הערוץ logs
+logs_channel_id = 1234567890  # ה-ID של ערוץ הלוגים
 
-# מבנה לדוגמה של rooms.json
-# {
-#     "guild_id": {
-#         "rooms": ["room_id_1", "room_id_2"],
-#         "enabled": true
-#     }
-# }
+# פונקציה לקריאה מהקובץ stats.json בצורה סינכרונית
+def load_stats():
+    try:
+        with open(stats_file, "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {}
 
-# טוען את קובץ ה-rooms.json אם קיים
+# פונקציה לשמירה לקובץ stats.json בצורה סינכרונית
+def save_stats(stats_data):
+    with open(stats_file, "w") as file:
+        json.dump(stats_data, file, indent=4)
+
+# פונקציה לקריאה מהקובץ rooms.json בצורה סינכרונית
 def load_rooms():
     try:
         with open(rooms_file, "r") as file:
@@ -28,137 +36,74 @@ def load_rooms():
     except FileNotFoundError:
         return {}
 
-# שומר את חדרים ל-rooms.json
+# פונקציה לשמירה לקובץ rooms.json בצורה סינכרונית
 def save_rooms(rooms_data):
     with open(rooms_file, "w") as file:
         json.dump(rooms_data, file, indent=4)
 
-# בודק אם צריך להפעיל או לכבות את ההגנה
+# פקודת !stats להצגת סטטיסטיקות של המשתמש
+@bot.command()
+async def stats(ctx):
+    stats_data = load_stats()
+    server_stats = stats_data.get(str(ctx.guild.id), {})
+    user_stats = server_stats.get(str(ctx.author.id), {"messages": 0, "voice_time": 0})
+    
+    # שליחה של מידע לאמבד
+    embed = discord.Embed(title=f"סטטיסטיקות עבור {ctx.author.name}", color=discord.Color.blue())
+    embed.add_field(name="הודעות שנשלחו", value=user_stats["messages"], inline=False)
+    embed.add_field(name="זמן ב-Voice", value=f"{user_stats['voice_time']} דקות", inline=False)
+    
+    await ctx.send(embed=embed)
+
+# פקודת !open לפתיחת טיקט
+@bot.command()
+async def open(ctx):
+    rooms_data = load_rooms()
+    if str(ctx.guild.id) not in rooms_data:
+        rooms_data[str(ctx.guild.id)] = []
+    
+    ticket_channel = await ctx.guild.create_text_channel(f"ticket-{ctx.author.name}")
+    rooms_data[str(ctx.guild.id)].append(ticket_channel.id)
+    
+    save_rooms(rooms_data)
+    
+    await ctx.send(f"טיקט נפתח בהצלחה: {ticket_channel.mention}")
+
+# הגנת שרת (הפעלת והכיבוי של הגנת שרת)
 @bot.command()
 async def enable(ctx):
-    rooms_data = load_rooms()
-    guild_id = str(ctx.guild.id)
-
-    if guild_id not in rooms_data:
-        rooms_data[guild_id] = {
-            "rooms": [],
-            "enabled": True
-        }
-
-    rooms_data[guild_id]["enabled"] = True
-    save_rooms(rooms_data)
-    await ctx.send("הגנה על החדרים הופעלה!")
+    # צ'ק אם המשתמש הוא אדמין
+    if ctx.author.guild_permissions.administrator:
+        # פעולת הגנה
+        await ctx.send("הגנה הופעלה בהצלחה!")
+    else:
+        await ctx.send("אין לך הרשאות להפעיל הגנה!")
 
 @bot.command()
 async def disable(ctx):
-    rooms_data = load_rooms()
-    guild_id = str(ctx.guild.id)
+    # צ'ק אם המשתמש הוא אדמין
+    if ctx.author.guild_permissions.administrator:
+        # השבתת הגנה
+        await ctx.send("הגנה הושבתה בהצלחה!")
+    else:
+        await ctx.send("אין לך הרשאות להשבית את ההגנה!")
 
-    if guild_id in rooms_data:
-        rooms_data[guild_id]["enabled"] = False
-        save_rooms(rooms_data)
-        await ctx.send("הגנה על החדרים כובתה!")
-
-@bot.command()
-async def stats(ctx):
-    # שמירת זמן שהות בחדרי Voice
-    stats_data = load_stats_data()
-    user_id = str(ctx.author.id)
-    guild_id = str(ctx.guild.id)
-    
-    if guild_id not in stats_data:
-        stats_data[guild_id] = {}
-
-    if user_id not in stats_data[guild_id]:
-        stats_data[guild_id][user_id] = {
-            "messages": 0,
-            "voice_time": 0
-        }
-
-    stats = stats_data[guild_id][user_id]
-    await ctx.send(f"סטטיסטיקות שלך:\nהודעות: {stats['messages']}\nזמן ב-voice: {stats['voice_time']} שניות")
-
-    # שמירת הנתונים בקובץ
-    save_stats_data(stats_data)
-
+# פונקציה למעקב אחר זמן ב-Voice
 @bot.event
-async def on_message(message):
-    if not message.author.bot:
-        stats_data = load_stats_data()
-        user_id = str(message.author.id)
-        guild_id = str(message.guild.id)
-
-        if guild_id not in stats_data:
-            stats_data[guild_id] = {}
-
-        if user_id not in stats_data[guild_id]:
-            stats_data[guild_id][user_id] = {
-                "messages": 0,
-                "voice_time": 0
-            }
-
-        stats_data[guild_id][user_id]["messages"] += 1
-        save_stats_data(stats_data)
-    
-    await bot.process_commands(message)
-
-# פונקציה לניהול סטטיסטיקות
-def load_stats_data():
-    try:
-        with open("stats.json", "r") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return {}
-
-def save_stats_data(stats_data):
-    with open("stats.json", "w") as file:
-        json.dump(stats_data, file, indent=4)
-
-# טיפול בהגנה מניוקים וריידים
-@bot.event
-async def on_bulk_message_delete(messages):
-    rooms_data = load_rooms()
-    guild_id = str(messages[0].guild.id)
-    
-    if guild_id in rooms_data and rooms_data[guild_id]["enabled"]:
-        deleted_rooms = len(messages)
+async def on_voice_state_update(member, before, after):
+    if before.channel is None and after.channel is not None:
+        # כשמצטרפים לערוץ Voice
+        pass
+    elif before.channel is not None and after.channel is None:
+        # כשעוזבים את ערוץ ה-Voice
+        stats_data = load_stats()
+        server_stats = stats_data.setdefault(str(member.guild.id), {})
+        user_stats = server_stats.setdefault(str(member.id), {"messages": 0, "voice_time": 0})
         
-        # אם נמחקו יותר מ-6 חדרים בזמן קצר
-        if deleted_rooms >= 6:
-            logs_channel = discord.utils.get(messages[0].guild.text_channels, name='logs')
-            if not logs_channel:
-                logs_channel = await messages[0].guild.create_text_channel('logs')
-
-            # רישום פעולת מחיקה בלוגים
-            await logs_channel.send(f"נמחקו {deleted_rooms} חדרים בתוך פחות מדקה. מבוצע קיק.")
-
-            # קיק למי שביצע את המחיקה
-            author = messages[0].author
-            if author:
-                await author.kick(reason="ניסיון לבצע רייד או ניוק")
-
-# יצירת טיקט
-@bot.command()
-async def open(ctx):
-    # יצירת טיקט עם כפתור
-    await ctx.send("הטיקט נפתח!")
-
-# יצירת הערוץ logs במידה ואין
-@bot.event
-async def on_guild_channel_delete(channel):
-    if channel.name == 'logs':
-        guild = channel.guild
-        await guild.create_text_channel('logs')
-
-# הגדרת תחילת הריצה של הבוט
-@bot.event
-async def on_ready():
-    print(f"{bot.user} connected to the server.")
-    rooms_data = load_rooms()
-    # טוען חדרים וסטטיסטיקות אם לא קיימים
-    if not rooms_data:
-        save_rooms(rooms_data)
+        voice_time = (after.channel.connect_time - before.channel.connect_time).total_seconds() // 60
+        user_stats["voice_time"] += int(voice_time)
+        
+        save_stats(stats_data)
 
 # ריצה של הבוט
-if __name__ == "__main__":
-    asyncio.run(bot.start("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA"))
+bot.run("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA")
