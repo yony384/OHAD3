@@ -68,8 +68,8 @@ async def open_ticket(ctx):
     await channel.send(f"שלום {ctx.author.mention}, הטיקט שלך נפתח. איך אפשר לעזור לך?")
 
 # פקודת !help - הצגת פקודות זמינות
-@bot.command(name='help')
-async def help_command(ctx):
+@bot.command(name='show_help')
+async def show_help_command(ctx):
     help_message = """
     פקודות זמינות:
     !stats - הצגת סטטיסטיקות הודעות וזמן ב-voice.
@@ -77,7 +77,7 @@ async def help_command(ctx):
     !ping - בדיקת תגובה.
     !help - הצגת פקודות זמינות.
     """
-    await ctx.send(help_message)
+    await ctx.send(show_help_message)
 
 # פקודת !ping - לבדוק שהבוט פועל
 @bot.command(name='ping')
