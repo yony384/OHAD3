@@ -1,178 +1,153 @@
 import discord
 from discord.ext import commands, tasks
-from discord.utils import get
-from discord import app_commands, Intents, Interaction, ButtonStyle
+from discord import app_commands
 import json
 import os
 from datetime import datetime
 import asyncio
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents = discord.Intents.default()
+intents.messages = True
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+intents.voice_states = True
 
+bot = commands.Bot(command_prefix='!', intents=intents)
 stats_file = "stats.json"
 protection_enabled = {}
 
-# Load stats
-if os.path.exists(stats_file):
-    with open(stats_file, "r") as f:
-        stats = json.load(f)
-else:
-    stats = {}
+# === סטטיסטיקות ===
 
-# Save stats
-def save_stats():
+if not os.path.exists(stats_file):
     with open(stats_file, "w") as f:
-        json.dump(stats, f, indent=4)
+        json.dump({}, f)
 
-# Logs setup
-async def log_action(guild, content):
-    log_channel = discord.utils.get(guild.text_channels, name="logs")
-    if not log_channel:
-        log_channel = await guild.create_text_channel("logs")
-    await log_channel.send(content)
+def load_stats():
+    with open(stats_file, "r") as f:
+        return json.load(f)
 
-# When bot ready
+def save_stats(data):
+    with open(stats_file, "w") as f:
+        json.dump(data, f, indent=4)
+
+user_voice_joins = {}
+
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    print(f'Logged in as {bot.user}!')
     track_voice.start()
 
-# Track messages
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
+    stats = load_stats()
     gid = str(message.guild.id)
     uid = str(message.author.id)
-
-    if gid not in stats:
-        stats[gid] = {}
-    if uid not in stats[gid]:
-        stats[gid][uid] = {"messages": 0, "voice_seconds": 0, "last_join": None}
-
+    stats.setdefault(gid, {}).setdefault(uid, {"messages": 0, "voice_minutes": 0})
     stats[gid][uid]["messages"] += 1
-    save_stats()
+    save_stats(stats)
 
     await bot.process_commands(message)
 
-# Track voice join time
 @bot.event
 async def on_voice_state_update(member, before, after):
-    gid = str(member.guild.id)
     uid = str(member.id)
+    gid = str(member.guild.id)
 
-    if gid not in stats:
-        stats[gid] = {}
-    if uid not in stats[gid]:
-        stats[gid][uid] = {"messages": 0, "voice_seconds": 0, "last_join": None}
+    if after.channel is not None and before.channel is None:
+        user_voice_joins[(gid, uid)] = datetime.utcnow()
+    elif after.channel is None and before.channel is not None:
+        join_time = user_voice_joins.pop((gid, uid), None)
+        if join_time:
+            minutes = int((datetime.utcnow() - join_time).total_seconds() / 60)
+            stats = load_stats()
+            stats.setdefault(gid, {}).setdefault(uid, {"messages": 0, "voice_minutes": 0})
+            stats[gid][uid]["voice_minutes"] += minutes
+            save_stats(stats)
 
-    if after.channel and not before.channel:
-        stats[gid][uid]["last_join"] = datetime.utcnow().timestamp()
-    elif before.channel and not after.channel:
-        last_join = stats[gid][uid].get("last_join")
-        if last_join:
-            duration = int(datetime.utcnow().timestamp() - last_join)
-            stats[gid][uid]["voice_seconds"] += duration
-            stats[gid][uid]["last_join"] = None
-            save_stats()
-
-# Background task: update voice time every 60 sec
-@tasks.loop(seconds=60)
+@tasks.loop(minutes=1)
 async def track_voice():
-    for guild in bot.guilds:
-        for vc in guild.voice_channels:
-            for member in vc.members:
-                if member.bot:
-                    continue
-                gid = str(guild.id)
-                uid = str(member.id)
-                if gid not in stats:
-                    stats[gid] = {}
-                if uid not in stats[gid]:
-                    stats[gid][uid] = {"messages": 0, "voice_seconds": 0, "last_join": None}
-                stats[gid][uid]["voice_seconds"] += 60
-    save_stats()
+    now = datetime.utcnow()
+    stats = load_stats()
+    for (gid, uid), join_time in user_voice_joins.items():
+        minutes = int((now - join_time).total_seconds() / 60)
+        stats.setdefault(gid, {}).setdefault(uid, {"messages": 0, "voice_minutes": 0})
+        stats[gid][uid]["voice_minutes"] += minutes
+        user_voice_joins[(gid, uid)] = now
+    save_stats(stats)
 
-# !stats command
 @bot.command()
 async def stats(ctx):
     gid = str(ctx.guild.id)
     uid = str(ctx.author.id)
+    stats = load_stats()
+    user_stats = stats.get(gid, {}).get(uid)
 
-    user_stats = stats.get(gid, {}).get(uid, {"messages": 0, "voice_seconds": 0})
-    minutes = user_stats["voice_seconds"] // 60
+    if not user_stats:
+        await ctx.send("לא נמצאו נתונים.")
+        return
 
-    embed = discord.Embed(title="📊 סטטיסטיקות שבועיות", color=discord.Color.blue())
-    embed.add_field(name="הודעות 💬", value=str(user_stats["messages"]), inline=False)
-    embed.add_field(name="זמן ב־Voice 🕓", value=f"{minutes} דקות", inline=False)
+    embed = discord.Embed(title="הסטטיסטיקות שלך", color=discord.Color.green())
+    embed.add_field(name="הודעות", value=str(user_stats["messages"]), inline=False)
+    embed.add_field(name="זמן ב-Voice (בדקות)", value=str(user_stats["voice_minutes"]), inline=False)
     await ctx.send(embed=embed)
 
-# !open ticket
+# === מערכת טיקטים ===
+
 @bot.command()
 async def open(ctx):
-    class OpenButton(discord.ui.View):
-        @discord.ui.button(label="פתח טיקט", style=discord.ButtonStyle.green)
-        async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-            category = discord.utils.get(ctx.guild.categories, name="ticket")
-            if not category:
-                category = await ctx.guild.create_category("ticket")
+    embed = discord.Embed(title="תמיכה", description="לחץ על הכפתור כדי לפתוח טיקט", color=discord.Color.blurple())
+    view = discord.ui.View()
+    
+    class OpenTicket(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="פתח טיקט", style=discord.ButtonStyle.green)
 
-            overwrites = {
-                ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                interaction.user: discord.PermissionOverwrite(view_channel=True),
-                ctx.guild.me: discord.PermissionOverwrite(view_channel=True),
-            }
+        async def callback(self, interaction):
+            guild = interaction.guild
+            category = discord.utils.get(guild.categories, name="tickets")
+            if category is None:
+                category = await guild.create_category("tickets")
 
-            channel = await ctx.guild.create_text_channel(
-                name=f"ticket-{interaction.user.name}",
-                category=category,
-                overwrites=overwrites
-            )
-            await interaction.response.send_message(f"טיקט נפתח: {channel.mention}", ephemeral=True)
+            ticket_channel = await guild.create_text_channel(f"ticket-{interaction.user.name}", category=category)
+            await ticket_channel.set_permissions(interaction.user, read_messages=True, send_messages=True)
+            await ticket_channel.send(f"{interaction.user.mention}, הנה הטיקט שלך!")
 
-    embed = discord.Embed(title="🎟️ מערכת טיקטים", description="לחץ על הכפתור כדי לפתוח טיקט", color=discord.Color.green())
-    await ctx.send(embed=embed, view=OpenButton())
+            await interaction.response.send_message("טיקט נפתח!", ephemeral=True)
 
-# !enable protection
+    view.add_item(OpenTicket())
+    await ctx.send(embed=embed, view=view)
+
+# === הגנה מניוקים וריידים ===
+
 @bot.command()
-@commands.has_permissions(administrator=True)
 async def enable(ctx):
-    protection_enabled[str(ctx.guild.id)] = True
-    await ctx.send("🛡️ הגנה הופעלה.")
+    protection_enabled[ctx.guild.id] = True
+    await ctx.send("הגנה הופעלה.")
 
-# !disable protection
 @bot.command()
-@commands.has_permissions(administrator=True)
 async def disable(ctx):
-    protection_enabled[str(ctx.guild.id)] = False
-    await ctx.send("🛡️ הגנה בוטלה.")
-
-# Guild protection (logs role creation, channel deletion, etc.)
-@bot.event
-async def on_guild_channel_delete(channel):
-    gid = str(channel.guild.id)
-    if protection_enabled.get(gid):
-        await log_action(channel.guild, f"⚠️ נמחק ערוץ: {channel.name}")
+    protection_enabled[ctx.guild.id] = False
+    await ctx.send("הגנה בוטלה.")
 
 @bot.event
 async def on_guild_channel_create(channel):
-    gid = str(channel.guild.id)
-    if protection_enabled.get(gid):
-        await log_action(channel.guild, f"⚠️ נוצר ערוץ חדש: {channel.name}")
+    if protection_enabled.get(channel.guild.id):
+        log_channel = discord.utils.get(channel.guild.text_channels, name="logs")
+        if not log_channel:
+            log_channel = await channel.guild.create_text_channel("logs")
+        await log_channel.send(f"ערוץ חדש נוצר: {channel.name}")
 
 @bot.event
-async def on_member_ban(guild, user):
-    gid = str(guild.id)
-    if protection_enabled.get(gid):
-        await log_action(guild, f"⚠️ המשתמש {user} קיבל באן")
+async def on_member_join(member):
+    if protection_enabled.get(member.guild.id):
+        log_channel = discord.utils.get(member.guild.text_channels, name="logs")
+        if not log_channel:
+            log_channel = await member.guild.create_text_channel("logs")
+        await log_channel.send(f"חבר חדש הצטרף: {member.name}")
 
-@bot.event
-async def on_member_remove(member):
-    gid = str(member.guild.id)
-    if protection_enabled.get(gid):
-        await log_action(member.guild, f"⚠️ {member} עזב את השרת או הוסר")
-
-# Run bot
+# === הפעלת הבוט ===
 bot.run("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA")
