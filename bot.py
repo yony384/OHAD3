@@ -3,6 +3,8 @@ from discord.ext import commands, tasks
 import json
 import os
 from datetime import datetime
+import threading
+import socket
 
 # יצירת הבוט
 intents = discord.Intents.default()
@@ -125,6 +127,15 @@ async def on_voice_state_update(member, before, after):
     stats[str(member.guild.id)] = guild_stats
     with open(stats_file, 'w') as f:
         json.dump(stats, f)
+def keep_port_open():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('0.0.0.0', 8080))  # הפורט ש-"ייפתח" עבור הפלטפורמה
+    s.listen(1)
+    while True:
+        conn, addr = s.accept()
+        conn.close()
 
+# הפעלת השרת ברקע (thread)
+threading.Thread(target=keep_port_open, daemon=True).start()
 # הפעלת הבוט
 bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
