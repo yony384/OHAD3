@@ -49,6 +49,6 @@ class Protection(commands.Cog):
         status = "enabled" if is_enabled else "disabled"
         await ctx.send(f"The server protection is currently {status}.")
 
-# רישום ה-Cog
-def setup(bot):
-    bot.add_cog(Protection(bot))
+# רישום ה-Cog (אסינכרוני!)
+async def setup(bot):
+    await bot.add_cog(Protection(bot))
