@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import json
 import os
 from datetime import datetime
@@ -10,72 +10,52 @@ import socket
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# נתיב לקובץ ה-JSON שיכיל את הנתונים
+# נתיב לקובץ ה-JSON
 stats_file = 'stats.json'
 
-# אם הקובץ לא קיים, ניצור אותו
+# יצירת הקובץ אם לא קיים
 if not os.path.exists(stats_file):
     with open(stats_file, 'w') as f:
         json.dump({}, f)
 
-# פונקציה לעדכון הסטטיסטיקות ב-JSON
-def update_stats():
-    with open(stats_file, 'r') as f:
-        stats = json.load(f)
-    
-    # עדכון הסטטיסטיקות
-    for guild in bot.guilds:
-        if str(guild.id) not in stats:
-            stats[str(guild.id)] = {'messages': 0, 'voice_time': 0}
-        
-    with open(stats_file, 'w') as f:
-        json.dump(stats, f)
-
-# פונקציה שממירה שניות לשעות ודקות בעברית
-def format_voice_time(seconds):
-    minutes = seconds // 60
-    hours = minutes // 60
-    remaining_minutes = minutes % 60
-
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours} {'שעה' if hours == 1 else 'שעות'}")
-    if remaining_minutes > 0:
-        parts.append(f"{remaining_minutes} {'דקה' if remaining_minutes == 1 else 'דקות'}")
-
-    return ' ו-'.join(parts) if parts else '0 דקות'
-
-# פקודת !stats להציג את הסטטיסטיקות
+# פקודת !stats
 @bot.command(name='stats')
 async def stats(ctx):
-    # קריאה לסטטיסטיקות מהקובץ
     with open(stats_file, 'r') as f:
         stats = json.load(f)
 
-    guild_stats = stats.get(str(ctx.guild.id), {'messages': 0, 'voice_time': 0})
-    
-    # יצירת האמבד
+    guild_id = str(ctx.guild.id)
+    user_id = str(ctx.author.id)
+
+    user_stats = stats.get(guild_id, {}).get(user_id, {'messages': 0, 'voice_time': 0})
+
+    # המרה לפורמט קריא
+    total_seconds = user_stats['voice_time']
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    formatted_time = f"{hours} שעות, {minutes} דקות, {seconds} שניות"
+
     embed = discord.Embed(
-        title="סטטיסטיקות של השרת",
-        description=f"סטטיסטיקות עבור השרת {ctx.guild.name}",
+        title="הסטטיסטיקות שלך",
+        description=f"סטטיסטיקות עבור {ctx.author.display_name}",
         color=discord.Color.blue()
     )
-    embed.add_field(name="הודעות שנשלחו", value=str(guild_stats['messages']), inline=False)
-    embed.add_field(name="זמן ב-voice", value=format_voice_time(guild_stats['voice_time']), inline=False)
+    embed.add_field(name="הודעות שנשלחו", value=str(user_stats['messages']), inline=False)
+    embed.add_field(name="זמן ב-voice", value=formatted_time, inline=False)
 
     await ctx.send(embed=embed)
 
-# פקודת !open - פתיחת טיקט
+# פקודת !open_ticket
 @bot.command(name='open_ticket')
 async def open_ticket(ctx):
-    # יצירת קטגוריה אם לא קיימת
     category = discord.utils.get(ctx.guild.categories, name='Tickets')
     if not category:
         category = await ctx.guild.create_category('Tickets')
 
-    # יצירת טיקט
     overwrites = {
         ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
         ctx.author: discord.PermissionOverwrite(read_messages=True)
@@ -83,77 +63,94 @@ async def open_ticket(ctx):
     channel = await category.create_text_channel(f'ticket-{ctx.author.name}', overwrites=overwrites)
     await channel.send(f"שלום {ctx.author.mention}, הטיקט שלך נפתח. איך אפשר לעזור לך?")
 
-# פקודת !help - הצגת פקודות זמינות
+# פקודת !help
 @bot.command(name='show_help')
 async def show_help_command(ctx):
-    help_message = """
+    show_help_message = """
     פקודות זמינות:
     !stats - הצגת סטטיסטיקות הודעות וזמן ב-voice.
     !open_ticket - פתיחת טיקט חדש.
     !ping - בדיקת תגובה.
     !help - הצגת פקודות זמינות.
     """
-    await ctx.send(help_message)
+    await ctx.send(show_help_message)
 
-# פקודת !ping - לבדוק שהבוט פועל
+# פקודת !ping
 @bot.command(name='ping')
 async def ping(ctx):
     await ctx.send(f'פינג: {round(bot.latency * 1000)}ms')
 
-# פונקציה לעקוב אחרי ההודעות שנשלחו
+# מעקב אחרי הודעות
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
-    # קריאה לסטטיסטיקות מהקובץ
+
     with open(stats_file, 'r') as f:
         stats = json.load(f)
 
-    guild_stats = stats.get(str(message.guild.id), {'messages': 0, 'voice_time': 0})
-    guild_stats['messages'] += 1
+    guild_id = str(message.guild.id)
+    user_id = str(message.author.id)
 
-    stats[str(message.guild.id)] = guild_stats
+    if guild_id not in stats:
+        stats[guild_id] = {}
+
+    if user_id not in stats[guild_id]:
+        stats[guild_id][user_id] = {'messages': 0, 'voice_time': 0, 'joined_at': None}
+
+    stats[guild_id][user_id]['messages'] += 1
+
     with open(stats_file, 'w') as f:
         json.dump(stats, f)
 
     await bot.process_commands(message)
 
-# פונקציה לעקוב אחרי זמן ב-voice
+# מעקב אחרי זמן ב-voice
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
 
-    # קריאה לסטטיסטיקות מהקובץ
     with open(stats_file, 'r') as f:
         stats = json.load(f)
 
-    guild_stats = stats.get(str(member.guild.id), {'messages': 0, 'voice_time': 0})
+    guild_id = str(member.guild.id)
+    user_id = str(member.id)
 
-    # אם חבר נכנס ל-voice channel
+    if guild_id not in stats:
+        stats[guild_id] = {}
+
+    if user_id not in stats[guild_id]:
+        stats[guild_id][user_id] = {'messages': 0, 'voice_time': 0, 'joined_at': None}
+
+    user_stats = stats[guild_id][user_id]
+
+    # נכנס לערוץ
     if after.channel and not before.channel:
-        guild_stats['voice_time'] -= int(datetime.now().timestamp())
+        user_stats['joined_at'] = datetime.now().timestamp()
 
-    # אם חבר יצא מ-voice channel
-    if not after.channel and before.channel:
-        guild_stats['voice_time'] += int(datetime.now().timestamp())
+    # יצא מהערוץ
+    if not after.channel and before.channel and user_stats.get('joined_at'):
+        join_time = user_stats['joined_at']
+        session_duration = int(datetime.now().timestamp() - join_time)
+        user_stats['voice_time'] += session_duration
+        user_stats['joined_at'] = None
 
-    stats[str(member.guild.id)] = guild_stats
+    stats[guild_id][user_id] = user_stats
+
     with open(stats_file, 'w') as f:
         json.dump(stats, f)
 
-# שמירת פורט פתוח להרצת הבוט (למשל ב-Render)
+# פתיחת פורט ל-Render
 def keep_port_open():
-    port = int(os.environ.get("PORT", 8080))  # ברירת מחדל 8080 אם לא קיים
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('0.0.0.0', port))
+    s.bind(('0.0.0.0', 8080))
     s.listen(1)
     while True:
         conn, addr = s.accept()
         conn.close()
 
-# הפעלת השרת ברקע (thread)
 threading.Thread(target=keep_port_open, daemon=True).start()
 
-# הפעלת הבוט
-bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
+# הפעלת הבוט (שנה את הטוקן שלך פה אם צריך)
+bot.run('YOUR_DISCORD_BOT_TOKEN')
