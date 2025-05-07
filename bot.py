@@ -1,7 +1,8 @@
 import discord
 from discord.ext import commands, tasks
-from discord.ext.commands import has_permissions
+from discord.ui import Button, View
 import json
+import asyncio
 import os
 from datetime import datetime
 
@@ -9,35 +10,22 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 stats_file = "stats.json"
-rooms_file = "rooms.json"
-protected_guilds = []
+protection_enabled = {}
 
-# יצירת קובץ אם לא קיים
-def ensure_file(file, default):
-    if not os.path.exists(file):
-        with open(file, "w", encoding='utf-8') as f:
-            json.dump(default, f, indent=4, ensure_ascii=False)
+# ---------- כלים ----------
 
-ensure_file(stats_file, {})
-ensure_file(rooms_file, {})
-
-# טעינת קבצים
-def load_json(file):
-    with open(file, "r", encoding='utf-8') as f:
+def load_json(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_json(file, data):
-    with open(file, "w", encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
 
-# לוג
-async def log(guild, message):
-    logs = discord.utils.get(guild.text_channels, name="logs")
-    if not logs:
-        logs = await guild.create_text_channel("logs")
-    await logs.send(message)
+# ---------- ניטור הודעות ו-voice ----------
 
-# מנטר הודעות
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -47,126 +35,108 @@ async def on_message(message):
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
 
-    stats.setdefault(guild_id, {}).setdefault(user_id, {"messages": 0, "voice_seconds": 0})
+    stats.setdefault(guild_id, {}).setdefault(user_id, {"messages": 0, "voice_time": 0, "last_voice": None})
     stats[guild_id][user_id]["messages"] += 1
 
     save_json(stats_file, stats)
     await bot.process_commands(message)
 
-# מנטר Voice
-voice_start_times = {}
-
 @bot.event
 async def on_voice_state_update(member, before, after):
-    uid = str(member.id)
-    gid = str(member.guild.id)
-
     stats = load_json(stats_file)
+    guild_id = str(member.guild.id)
+    user_id = str(member.id)
 
-    if after.channel and not before.channel:
-        voice_start_times[(gid, uid)] = datetime.utcnow()
-    elif before.channel and not after.channel:
-        start = voice_start_times.pop((gid, uid), None)
-        if start:
-            duration = (datetime.utcnow() - start).total_seconds()
-            stats.setdefault(gid, {}).setdefault(uid, {"messages": 0, "voice_seconds": 0})
-            stats[gid][uid]["voice_seconds"] += int(duration)
-            save_json(stats_file, stats)
+    stats.setdefault(guild_id, {}).setdefault(user_id, {"messages": 0, "voice_time": 0, "last_voice": None})
 
-# פקודת !stats
+    now = datetime.utcnow().timestamp()
+
+    if before.channel is None and after.channel is not None:
+        stats[guild_id][user_id]["last_voice"] = now
+
+    elif before.channel is not None and after.channel is None:
+        last = stats[guild_id][user_id]["last_voice"]
+        if last:
+            stats[guild_id][user_id]["voice_time"] += int(now - last)
+        stats[guild_id][user_id]["last_voice"] = None
+
+    save_json(stats_file, stats)
+
+# ---------- פקודות ----------
+
 @bot.command()
 async def stats(ctx):
-    gid = str(ctx.guild.id)
-    uid = str(ctx.author.id)
-
     stats = load_json(stats_file)
-    user_stats = stats.get(gid, {}).get(uid, {"messages": 0, "voice_seconds": 0})
+    guild_id = str(ctx.guild.id)
+    user_id = str(ctx.author.id)
 
-    embed = discord.Embed(title="📊 הסטטיסטיקות שלך השבוע", color=discord.Color.green())
-    embed.add_field(name="הודעות", value=user_stats["messages"])
-    hours = user_stats["voice_seconds"] // 3600
-    minutes = (user_stats["voice_seconds"] % 3600) // 60
-    embed.add_field(name="זמן ב־Voice", value=f"{int(hours)} שעות ו־{int(minutes)} דקות")
+    user_stats = stats.get(guild_id, {}).get(user_id)
+
+    if not user_stats:
+        await ctx.send("אין נתונים עליך עדיין.")
+        return
+
+    minutes = user_stats["voice_time"] // 60
+    embed = discord.Embed(title=f"סטטיסטיקה של {ctx.author.display_name}", color=discord.Color.blue())
+    embed.add_field(name="הודעות", value=str(user_stats["messages"]))
+    embed.add_field(name="דקות ב-Voice", value=str(minutes))
+
     await ctx.send(embed=embed)
 
-# פקודת !enable
 @bot.command()
-@has_permissions(administrator=True)
+async def open(ctx):
+    async def button_callback(interaction: discord.Interaction):
+        category = discord.utils.get(ctx.guild.categories, name="ticket")
+        if category is None:
+            category = await ctx.guild.create_category("ticket")
+
+        channel = await ctx.guild.create_text_channel(f"ticket-{interaction.user.name}", category=category)
+        await channel.set_permissions(interaction.user, read_messages=True, send_messages=True)
+        await channel.send(f"{interaction.user.mention} ברוך הבא לטיקט שלך!")
+        await interaction.response.send_message(f"נפתח טיקט: {channel.mention}", ephemeral=True)
+
+    button = Button(label="פתח טיקט", style=discord.ButtonStyle.green)
+    button.callback = button_callback
+    view = View()
+    view.add_item(button)
+
+    embed = discord.Embed(title="מערכת טיקטים", description="לחץ על הכפתור כדי לפתוח טיקט.", color=discord.Color.green())
+    await ctx.send(embed=embed, view=view)
+
+@bot.command()
 async def enable(ctx):
-    guild = ctx.guild
-    gid = str(guild.id)
-    rooms = {}
+    protection_enabled[str(ctx.guild.id)] = True
+    await ctx.send("🔒 ההגנה הופעלה.")
 
-    for channel in guild.channels:
-        perms = {}
-        for role in channel.changed_roles:
-            perms[str(role.id)] = {
-                "read_messages": channel.permissions_for(role).read_messages,
-                "send_messages": channel.permissions_for(role).send_messages
-            }
-        rooms[str(channel.id)] = {
-            "name": channel.name,
-            "type": str(channel.type),
-            "permissions": perms
-        }
+@bot.command()
+async def disable(ctx):
+    protection_enabled[str(ctx.guild.id)] = False
+    await ctx.send("🔓 ההגנה בוטלה.")
 
-    all_data = load_json(rooms_file)
-    all_data[gid] = rooms
-    save_json(rooms_file, all_data)
-    protected_guilds.append(gid)
+# ---------- מערכת אנטי ניוק ----------
 
-    await ctx.send("✅ הגנה הופעלה ונשמרו הגדרות החדרים.")
-    await log(guild, f"🛡️ ההגנה הופעלה על ידי {ctx.author.mention}.")
+@bot.event
+async def on_guild_channel_create(channel):
+    await check_raid(channel.guild, f"נוצר ערוץ: {channel.name}")
 
-# אנטי ניוק ורייד
 @bot.event
 async def on_guild_channel_delete(channel):
-    gid = str(channel.guild.id)
-    if gid in protected_guilds:
-        await log(channel.guild, f"🚨 ערוץ {channel.name} נמחק!")
+    await check_raid(channel.guild, f"נמחק ערוץ: {channel.name}")
 
 @bot.event
 async def on_member_join(member):
-    gid = str(member.guild.id)
-    if gid in protected_guilds:
-        await log(member.guild, f"⚠️ {member.mention} הצטרף לשרת.")
+    await check_raid(member.guild, f"חבר חדש נכנס: {member.name}")
 
-# מערכת טיקטים
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+async def check_raid(guild, message):
+    if not protection_enabled.get(str(guild.id), False):
+        return
 
-    @discord.ui.button(label="📩 פתח טיקט", style=discord.ButtonStyle.green)
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="ticket")
+    log_channel = discord.utils.get(guild.text_channels, name="logs")
+    if log_channel is None:
+        log_channel = await guild.create_text_channel("logs")
 
-        if not category:
-            category = await guild.create_category("ticket")
+    await log_channel.send(f"[הגנה] {message}")
 
-        existing = discord.utils.get(guild.text_channels, name=f"ticket-{user.name}")
-        if existing:
-            await interaction.response.send_message(f"כבר יש לך טיקט פתוח: {existing.mention}", ephemeral=True)
-            return
+# ---------- הפעלה ----------
 
-        ticket_channel = await guild.create_text_channel(
-            f"ticket-{user.name}",
-            category=category,
-            overwrites={
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                user: discord.PermissionOverwrite(read_messages=True)
-            }
-        )
-        await ticket_channel.send(f"{user.mention} פתחת טיקט. אנא פרט את הבעיה.")
-        await interaction.response.send_message(f"הטיקט נפתח: {ticket_channel.mention}", ephemeral=True)
-        await log(guild, f"🎫 טיקט נפתח על ידי {user.mention}.")
-
-# פקודת !open
-@bot.command()
-async def open(ctx):
-    embed = discord.Embed(title="🎫 פתיחת טיקט", description="לחץ על הכפתור למטה כדי לפתוח טיקט.", color=discord.Color.blue())
-    await ctx.send(embed=embed, view=TicketView())
-
-# הרצת הבוט
 bot.run("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA")
