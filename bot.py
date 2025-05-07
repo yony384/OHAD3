@@ -1,148 +1,191 @@
 import discord
 from discord.ext import commands, tasks
 import json
-import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import time
+import asyncio
+import datetime
+from collections import defaultdict
 
-# יצירת אינסטנציה של הבוט
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # נדרש כדי לעקוב אחרי חברים ב-voice
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.members = True
+intents.guilds = True
+intents.voice_states = True
+intents.guild_messages = True
+intents.guild_reactions = True
 
-# הגדרת קובץ הסטטיסטיקות
-stats_file = "stats.json"
+client = commands.Bot(command_prefix="!", intents=intents)
 
-# טוען את הסטטיסטיקות מקובץ JSON
+# Load or initialize stats data
 def load_stats():
-    if os.path.exists(stats_file):
-        with open(stats_file, "r") as f:
+    try:
+        with open("stats.json", "r") as f:
             return json.load(f)
-    return {}
+    except FileNotFoundError:
+        return {}
 
-# שומר את הסטטיסטיקות לקובץ JSON
-def save_stats(stats):
-    with open(stats_file, "w") as f:
-        json.dump(stats, f, indent=4)
+def save_stats(data):
+    with open("stats.json", "w") as f:
+        json.dump(data, f, indent=4)
 
-# הגדרת המערך הגנתי
-protection_enabled = False
-logs_channel_id = None
+# Load or initialize rooms data
+def load_rooms():
+    try:
+        with open("rooms.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-# יצירת חדר logs אם לא קיים
-async def create_logs_channel(guild):
-    global logs_channel_id
-    logs_channel = discord.utils.get(guild.text_channels, name="logs")
-    if not logs_channel:
-        logs_channel = await guild.create_text_channel("logs")
-    logs_channel_id = logs_channel.id
+def save_rooms(data):
+    with open("rooms.json", "w") as f:
+        json.dump(data, f, indent=4)
 
-# הגדרת פונקציה לשליחת הודעות לחדר "logs"
-async def log_activity(guild, message):
-    if logs_channel_id:
-        logs_channel = guild.get_channel(logs_channel_id)
-        if logs_channel:
-            await logs_channel.send(message)
+# Initialize stats and rooms data
+stats = load_stats()
+rooms = load_rooms()
 
-# עדכון הסטטיסטיקות של זמן ב-voice
-def update_stats(user_id, server_id, voice_time):
-    stats = load_stats()
-    if server_id not in stats:
-        stats[server_id] = {}
-    if user_id not in stats[server_id]:
-        stats[server_id][user_id] = {"messages": 0, "voice_time": 0}
-    stats[server_id][user_id]["voice_time"] += voice_time
-    save_stats(stats)
+# Dictionary to store user voice time and other details
+voice_times = defaultdict(lambda: defaultdict(int))  # server_id -> user_id -> time_in_voice
+deletion_logs = defaultdict(list)  # server_id -> list of deletion logs
 
-# משתנים למעקב אחרי הזמן ב-voice
-user_voice_start_time = {}
-
-# עדכון הזמן ב-voice על כל כניסת משתמש
-@bot.event
-async def on_voice_state_update(member, before, after):
-    global user_voice_start_time
-    server_id = str(member.guild.id)
-    user_id = str(member.id)
-
-    # אם המשתמש נכנס ל-voice
-    if after.channel is not None and before.channel is None:
-        user_voice_start_time[user_id] = time.time()
-    
-    # אם המשתמש יצא מ-voice
-    elif after.channel is None and before.channel is not None:
-        if user_id in user_voice_start_time:
-            voice_time = int(time.time() - user_voice_start_time[user_id]) // 60  # זמן ב-voice בדקות
-            update_stats(user_id, server_id, voice_time)
-            del user_voice_start_time[user_id]
-
-# עדכון הזמן ב-voice בזמן קריאת הפקודה !stats
-@bot.command(name="stats")
-async def stats(ctx):
-    stats = load_stats()
-    server_id = str(ctx.guild.id)
-    user_id = str(ctx.author.id)
-    
-    if user_id in user_voice_start_time:  # אם המשתמש עדיין ב-voice
-        voice_time = int(time.time() - user_voice_start_time[user_id]) // 60
-        update_stats(user_id, server_id, voice_time)
-        del user_voice_start_time[user_id]
-
-    if server_id in stats and user_id in stats[server_id]:
-        messages = stats[server_id][user_id].get("messages", 0)
-        voice_time = stats[server_id][user_id].get("voice_time", 0)
-        await ctx.send(f"Messages: {messages}, Voice Time: {voice_time} minutes")
-    else:
-        await ctx.send("No stats found for you!")
-
-# פקודת !open שמייצרת טיקט
-@bot.command(name="open")
-async def open_ticket(ctx):
-    category_name = "ticket"
-    category = discord.utils.get(ctx.guild.categories, name=category_name)
-
-    if category is None:
-        category = await ctx.guild.create_category(category_name)
-
-    ticket_channel = await ctx.guild.create_text_channel(f"ticket-{ctx.author.name}", category=category)
-    await ticket_channel.send(f"Hello {ctx.author.mention}, your ticket has been created!")
-
-# הפעלת הגנת שרת
-@bot.command(name="enable")
-async def enable_protection(ctx):
-    global protection_enabled
-    protection_enabled = True
-    await ctx.send("Server protection enabled.")
-
-# כיבוי הגנת שרת
-@bot.command(name="disable")
-async def disable_protection(ctx):
-    global protection_enabled
-    protection_enabled = False
-    await ctx.send("Server protection disabled.")
-
-# הגדרת Web Service מזויף
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'OK')
-
-def run_fake_server():
-    port = int(os.environ.get("PORT", 10000))  # Render דורש להשתמש ב-PROCESS-BOUND PORT
-    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    server.serve_forever()
-
-# הרץ את השרת המזויף בת'רד נפרד
-threading.Thread(target=run_fake_server, daemon=True).start()
-
-# הפעלת פקודת עדכון זמן ב-voice
-@bot.event
+@client.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
-    await create_logs_channel(bot.guilds[0])  # יצירת חדר logs בשרת הראשון
-    print("Logs channel created!")
-    
-# הפעלת הבוט
-bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
+    print(f"Logged in as {client.user}")
+
+# Command to open a ticket
+@client.command()
+async def open(ctx):
+    channel = ctx.channel
+    category = discord.utils.get(ctx.guild.categories, name="tickets")
+
+    if not category:
+        category = await ctx.guild.create_category("tickets")
+
+    # Create the ticket channel under the 'tickets' category
+    ticket_channel = await ctx.guild.create_text_channel(f"ticket-{ctx.author.name}", category=category)
+
+    await ticket_channel.send(f"Ticket opened by {ctx.author.mention}")
+    await ctx.send(f"Ticket opened: {ticket_channel.mention}")
+
+# Track voice time
+@tasks.loop(minutes=1)
+async def track_voice():
+    for guild in client.guilds:
+        for member in guild.members:
+            if member.voice:
+                voice_time = voice_times[guild.id][member.id]
+                voice_times[guild.id][member.id] = voice_time + 1  # Add 1 minute to the voice time
+
+# Command to get stats
+@client.command()
+async def stats(ctx):
+    user_id = ctx.author.id
+    server_id = ctx.guild.id
+
+    # Get the stats from the voice_times dictionary
+    voice_time = voice_times[server_id].get(user_id, 0)
+    minutes = voice_time
+    hours = minutes // 60
+    minutes = minutes % 60
+
+    await ctx.send(f"{ctx.author.mention}, you've spent {hours} hours and {minutes} minutes in voice channels.")
+
+# Command to enable protection and save all rooms with permissions
+@client.command()
+async def enable(ctx):
+    server_id = ctx.guild.id
+
+    # Save all channel names and permissions in rooms.json
+    rooms_data = {}
+    for channel in ctx.guild.channels:
+        if isinstance(channel, discord.TextChannel):
+            permissions = {}
+            for role in ctx.guild.roles:
+                permissions[role.name] = {
+                    "read_messages": channel.permissions_for(role).read_messages,
+                    "send_messages": channel.permissions_for(role).send_messages,
+                    "manage_messages": channel.permissions_for(role).manage_messages,
+                }
+            rooms_data[channel.id] = {
+                "name": channel.name,
+                "type": "text",
+                "created_at": channel.created_at.isoformat(),
+                "permissions": permissions
+            }
+        elif isinstance(channel, discord.VoiceChannel):
+            permissions = {}
+            for role in ctx.guild.roles:
+                permissions[role.name] = {
+                    "connect": channel.permissions_for(role).connect,
+                    "speak": channel.permissions_for(role).speak,
+                    "mute_members": channel.permissions_for(role).mute_members,
+                }
+            rooms_data[channel.id] = {
+                "name": channel.name,
+                "type": "voice",
+                "created_at": channel.created_at.isoformat(),
+                "permissions": permissions
+            }
+
+    rooms[server_id] = rooms_data
+    save_rooms(rooms)
+    await ctx.send(f"Protection enabled. All rooms and their permissions saved for server {ctx.guild.name}.")
+
+# Command to disable protection
+@client.command()
+async def disable(ctx):
+    server_id = ctx.guild.id
+    if server_id in rooms:
+        rooms[server_id]['protection_enabled'] = False
+        save_rooms(rooms)
+        await ctx.send("Protection has been disabled.")
+
+# Protection event for deletion of channels
+@client.event
+async def on_guild_channel_delete(channel):
+    server_id = channel.guild.id
+
+    if server_id in rooms and rooms.get(server_id, {}).get('protection_enabled', False):
+        deletion_logs[server_id].append({
+            "channel": channel.name,
+            "time": datetime.datetime.utcnow().isoformat(),
+            "deleted_by": str(channel.guild.owner)
+        })
+
+        # If there were multiple deletions within a short time, take action
+        if len(deletion_logs[server_id]) >= 6:  # More than 6 deletions within the last minute
+            time_threshold = datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
+            deletions_recent = [log for log in deletion_logs[server_id] if datetime.datetime.fromisoformat(log['time']) > time_threshold]
+
+            if len(deletions_recent) >= 6:
+                # Create a logs channel if not exists
+                logs_channel = discord.utils.get(channel.guild.text_channels, name="logs")
+                if not logs_channel:
+                    logs_channel = await channel.guild.create_text_channel("logs")
+
+                await logs_channel.send(f"Suspicious deletion activity detected: {len(deletions_recent)} channels deleted within 1 minute.")
+                
+                # Kick the user performing suspicious activity (if possible)
+                user = channel.guild.owner  # This should be replaced by actual user performing deletions
+                try:
+                    await user.kick(reason="Multiple channel deletions detected. Possible raid or nuke attempt.")
+                    await logs_channel.send(f"{user.mention} has been kicked for suspicious activity (multiple channel deletions).")
+                except Exception as e:
+                    print(f"Error kicking user: {e}")
+
+        save_rooms(rooms)
+
+# Update voice time when user leaves or joins a voice channel
+@client.event
+async def on_voice_state_update(member, before, after):
+    server_id = member.guild.id
+    if before.channel and not after.channel:  # User leaves a voice channel
+        voice_time = voice_times[server_id].get(member.id, 0)
+        voice_times[server_id][member.id] = voice_time + 1  # Add the time when they leave
+
+    if after.channel:  # User joins a voice channel
+        voice_times[server_id][member.id] = 0  # Reset the timer for new session
+
+# Start voice tracking task
+track_voice.start()
+
+client.run("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA")
