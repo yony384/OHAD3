@@ -1,5 +1,20 @@
 import discord
 from discord.ext import commands
+import json
+import os
+
+STATS_FILE = 'stats.json'
+
+def load_stats():
+    if not os.path.exists(STATS_FILE):
+        with open(STATS_FILE, 'w') as f:
+            json.dump({}, f)
+    with open(STATS_FILE, 'r') as f:
+        return json.load(f)
+
+def save_stats(stats):
+    with open(STATS_FILE, 'w') as f:
+        json.dump(stats, f, indent=4)
 
 class Stats(commands.Cog):
     def __init__(self, bot):
@@ -7,24 +22,17 @@ class Stats(commands.Cog):
 
     @commands.command()
     async def stats(self, ctx):
-        guild_data = self.bot.message_stats.get(ctx.guild.id, {})
-        
-        # יצירת האמבד
-        embed = discord.Embed(title=f"Server Statistics for {ctx.guild.name}", color=discord.Color.blue())
-        
-        for member_id, data in guild_data.items():
-            member = ctx.guild.get_member(member_id)
-            if member:
-                messages = data["messages"]
-                voice_time = data["voice_time"] // 3600  # המרת שניות לשעות
-                embed.add_field(
-                    name=member.name,
-                    value=f"Messages: {messages}\nVoice Time: {voice_time} hours",
-                    inline=False
-                )
-        
-        await ctx.send(embed=embed)
+        stats = load_stats()
+        user_stats = stats.get(str(ctx.author.id))
+        if user_stats:
+            await ctx.send(
+                f"📊 **{ctx.author.name}**\n"
+                f"Messages sent: `{user_stats['messages_sent']}`\n"
+                f"Time in voice: `{user_stats['time_in_voice']} minutes`"
+            )
+        else:
+            await ctx.send("No stats found for you.")
 
-# רישום ה-Cog
+# הפונקציה שנטענת ע"י load_extension
 async def setup(bot):
     await bot.add_cog(Stats(bot))
