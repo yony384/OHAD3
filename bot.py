@@ -153,4 +153,4 @@ def keep_port_open():
 threading.Thread(target=keep_port_open, daemon=True).start()
 
 # הפעלת הבוט (שנה את הטוקן שלך פה אם צריך)
-bot.run('YOUR_DISCORD_BOT_TOKEN')
+bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
