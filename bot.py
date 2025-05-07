@@ -1,187 +1,111 @@
 import discord
-import os
-import socket
-import json
 from discord.ext import commands, tasks
+import json
+import os
 import asyncio
 from datetime import datetime
 
-# הגדרת intents
+# יצירת אובייקט של הבוט עם פריפיקס
 intents = discord.Intents.default()
-intents.message_content = True  # לוודא שהכוונה זו פעילה
-intents.members = True  # מאפשר ניטור פעילות של חברים
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# יצירת אובייקט הבוט
-client = commands.Bot(command_prefix='!', intents=intents)
+# נתיב לקובץ JSON לאחסון המידע
+DATA_FILE = 'data.json'
 
-# הגדרת קובץ ה-JSON שבו נשמור את הסטטיסטיקות
-STATS_FILE = 'stats.json'
+# פונקציה שתטען את המידע מקובץ JSON
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-# פונקציה לבדוק פורטים פתוחים על השרת
-def check_open_ports():
-    open_ports = []
-    # פורטים לבדוק
-    ports = [80, 443, 8080, 5000]
+# פונקציה שתשמור את המידע לקובץ JSON
+def save_data(data):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+
+# פונקציה שמעדכנת את הסטטיסטיקות של המשתמש
+def update_user_stats(user_id, message_count=0, voice_time=0):
+    data = load_data()
+    user_stats = data.get('users', {})
     
-    for port in ports:
-        try:
-            # מנסה ליצור חיבור לפורט על כתובת ה-IP המקומית
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1)  # זמן חיבור מוגבל
-                result = s.connect_ex(('127.0.0.1', port))  # בודק אם הפורט פתוח
-                if result == 0:
-                    open_ports.append(port)
-        except socket.error:
-            pass  # אם קרתה שגיאה, מתעלמים ממנה
+    if user_id not in user_stats:
+        user_stats[user_id] = {'messages': 0, 'voice_time': 0}
 
-    return open_ports
-
-# פונקציה לעדכון סטטיסטיקות משתמשים
-def update_user_stats():
-    # אם קובץ הסטטיסטיקות לא קיים, ניצור אותו
-    if not os.path.exists(STATS_FILE):
-        stats = {}
-        with open(STATS_FILE, 'w') as f:
-            json.dump(stats, f)
-
-    # טוען את הנתונים הנוכחיים
-    with open(STATS_FILE, 'r') as f:
-        stats = json.load(f)
-
-    # עדכון סטטיסטיקות לכל משתמש
-    for guild in client.guilds:
-        for member in guild.members:
-            if member.bot:
-                continue  # לא מעדכן סטטיסטיקות של בוטים
-
-            # אם המשתמש לא קיים בסטטיסטיקות, ניצור לו ערכים חדשים
-            if str(member.id) not in stats:
-                stats[str(member.id)] = {
-                    'messages_sent': 0,
-                    'time_in_voice': 0
-                }
-
-    # שמירת הנתונים מחדש בקובץ
-    with open(STATS_FILE, 'w') as f:
-        json.dump(stats, f)
-
-# פונקציה לאיתור והפעלת כל ה-cogs
-async def load_cogs():
-    for filename in os.listdir('./cogs'):
-        if filename.endswith('.py'):
-            # טוען את כל ה-cogs בתיקיית cogs
-            await client.load_extension(f'cogs.{filename[:-3]}')
-
-# אירוע כשבוט מתחבר
-@client.event
-async def on_ready():
-    print(f'Logged in as {client.user}')
+    user_stats[user_id]['messages'] += message_count
+    user_stats[user_id]['voice_time'] += voice_time
     
-    # טעינת ה-cogs
-    await load_cogs()
+    data['users'] = user_stats
+    save_data(data)
 
-    # בדיקה אם יש פורטים פתוחים
-    open_ports = check_open_ports()
+# פונקציה שמעדכנת את שמות החדרים וההגדרות שלהם
+def update_channel_settings(channel_id, name, category):
+    data = load_data()
+    channels = data.get('channels', {})
     
-    # הדפסת הפורטים הפתוחים
-    if open_ports:
-        print(f"Open ports: {', '.join(map(str, open_ports))}")
-    else:
-        print("No open ports detected.")
+    channels[channel_id] = {'name': name, 'category': category}
+    
+    data['channels'] = channels
+    save_data(data)
 
-    # הפעלת משימה (למשל עדכון סטטיסטיקות כל שבוע)
-    update_stats.start()
-
-# טסק שמריץ כל שבוע
-@tasks.loop(hours=168)  # כל שבוע
-async def update_stats():
-    # עדכון סטטיסטיקות
-    update_user_stats()
-    print("Updated user stats...")
-
-# פקודה להציג את הסטטיסטיקות של המשתמש
-@client.command()
+# פקודת סטטיסטיקות שמציגה את כמות ההודעות והזמן ב-voice של המשתמש
+@bot.command(name='stats')
 async def stats(ctx):
-    # טוען את הנתונים
-    with open(STATS_FILE, 'r') as f:
-        stats = json.load(f)
+    data = load_data()
+    user_stats = data.get('users', {}).get(str(ctx.author.id), {'messages': 0, 'voice_time': 0})
+    await ctx.send(f"**{ctx.author.name}**: {user_stats['messages']} הודעות, {user_stats['voice_time']} שניות ב-voice")
 
-    # אם המשתמש קיים בסטטיסטיקות
-    user_stats = stats.get(str(ctx.author.id))
-    if user_stats:
-        messages_sent = user_stats['messages_sent']
-        time_in_voice = user_stats['time_in_voice']
-        await ctx.send(f"**{ctx.author.name}** sent {messages_sent} messages and spent {time_in_voice} minutes in voice channels.")
-    else:
-        await ctx.send(f"No stats found for {ctx.author.name}.")
+# פקודת פתיחת טיקט
+@bot.command(name='open')
+async def open_ticket(ctx):
+    category_name = 'ticket'
+    category = discord.utils.get(ctx.guild.categories, name=category_name)
+    
+    if not category:
+        category = await ctx.guild.create_category(category_name)
 
-# אירוע שמעדכן את הסטטיסטיקות של הודעות שנשלחו
-@client.event
+    overwrites = {
+        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        ctx.author: discord.PermissionOverwrite(read_messages=True)
+    }
+
+    ticket_channel = await ctx.guild.create_text_channel(f'ticket-{ctx.author.name}', category=category, overwrites=overwrites)
+    await ticket_channel.send(f"שלום {ctx.author.mention}, איך אני יכול לעזור לך היום?")
+    update_channel_settings(ticket_channel.id, ticket_channel.name, category.name)
+
+# פונקציה שמבצע עדכון על הודעות שנשלחו
+@bot.event
 async def on_message(message):
-    # אם זה לא הודעה של בוט, נעדכן את הסטטיסטיקות
-    if not message.author.bot:
-        # טוען את הנתונים הנוכחיים
-        with open(STATS_FILE, 'r') as f:
-            stats = json.load(f)
-
-        # אם המשתמש לא קיים בסטטיסטיקות, ניצור לו ערכים חדשים
-        if str(message.author.id) not in stats:
-            stats[str(message.author.id)] = {
-                'messages_sent': 0,
-                'time_in_voice': 0
-            }
-
-        # עדכון מספר ההודעות
-        stats[str(message.author.id)]['messages_sent'] += 1
-
-        # שמירת הנתונים מחדש בקובץ
-        with open(STATS_FILE, 'w') as f:
-            json.dump(stats, f)
-
-    # ממשיך לעבד את ההודעות
-    await client.process_commands(message)
-
-# אירוע כשמשתמש נכנס לערוץ קול
-@client.event
-async def on_voice_state_update(member, before, after):
-    if member.bot:
+    if message.author == bot.user:
         return
+    
+    update_user_stats(message.author.id, message_count=1)
+    await bot.process_commands(message)
 
-    # אם נכנס לערוץ קול חדש או יצא ממנו
-    if after.channel and not before.channel:  # נכנס לערוץ קול
-        # טוען את הנתונים הנוכחיים
-        with open(STATS_FILE, 'r') as f:
-            stats = json.load(f)
+# פונקציה שמבצע עדכון על זמן ב-voice
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if before.channel != after.channel:
+        return
+    
+    # אם הצטרף לערוץ, נתחיל למדוד את הזמן
+    if after.channel:
+        start_time = datetime.now()
+        while member.voice and member.voice.channel == after.channel:
+            await asyncio.sleep(5)
+        
+        end_time = datetime.now()
+        duration = (end_time - start_time).seconds
+        update_user_stats(member.id, voice_time=duration)
 
-        # אם המשתמש לא קיים בסטטיסטיקות, ניצור לו ערכים חדשים
-        if str(member.id) not in stats:
-            stats[str(member.id)] = {
-                'messages_sent': 0,
-                'time_in_voice': 0
-            }
-
-        # מתחילים לעקוב אחרי הזמן בערוץ
-        stats[str(member.id)]['time_in_voice'] = 0  # מתחילים עם אפס זמן
-
-        # שמירת הנתונים מחדש בקובץ
-        with open(STATS_FILE, 'w') as f:
-            json.dump(stats, f)
-
-    elif not after.channel and before.channel:  # יצא מערוץ קול
-        # טוען את הנתונים הנוכחיים
-        with open(STATS_FILE, 'r') as f:
-            stats = json.load(f)
-
-        # שמירת הזמן שבילה בערוץ
-        if str(member.id) in stats:
-            stats[str(member.id)]['time_in_voice'] += 1  # נניח שנשאר דקה אחת
-
-        # שמירת הנתונים מחדש בקובץ
-        with open(STATS_FILE, 'w') as f:
-            json.dump(stats, f)
-
-# הרצת הבוט עם ה-token שלך
-TOKEN = 'MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GyYtye.g-4PNwaC4Cpkq8wuDFCueWL-5n081x_3GX-BUw'
+# טעינת הפקודות והקוגים
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')
+    await bot.change_presence(activity=discord.Game(name="Managing your server"))
+    print(f'Bot is ready!')
 
 # הפעלת הבוט
-client.run(TOKEN)
+bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GyYtye.g-4PNwaC4Cpkq8wuDFCueWL-5n081x_3GX-BUw')
