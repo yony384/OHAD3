@@ -74,16 +74,16 @@ async def ping(ctx):
     await ctx.send('Pong!')
 
 # פקודת !help - הצגת מידע על הפקודות
-@bot.command(name='help')
-async def help_command(ctx):
-    help_message = """
+@bot.command(name='show_help')
+async def show_help_command(ctx):
+    show_help_message = """
     פקודות זמינות:
     !stats - הצגת סטטיסטיקות הודעות וזמן ב-voice.
     !open_ticket - פתיחת טיקט חדש.
     !ping - בדיקת תגובה.
     !help - הצגת פקודות זמינות.
     """
-    await ctx.send(help_message)
+    await ctx.send(show_help_message)
 
 # פונקציה לבדיקת פורטים פתוחים
 def check_ports():
