@@ -1,131 +1,117 @@
 import discord
 from discord.ext import commands, tasks
+import socket
 import json
 import os
-import asyncio
-from datetime import datetime
-import socket
 
-# יצירת אובייקט של הבוט עם פריפיקס
+# הגדרות הבוט
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
 
-# נתיב לקובץ JSON לאחסון המידע
-DATA_FILE = 'data.json'
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-# פונקציה שתטען את המידע מקובץ JSON
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+# נתיב לקובץ סטטיסטיקות
+stats_file = 'stats.json'
 
-# פונקציה שתשמור את המידע לקובץ JSON
-def save_data(data):
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+# נתיב לקובץ טיקטים
+tickets_file = 'tickets.json'
 
-# פונקציה שמעדכנת את הסטטיסטיקות של המשתמש
-def update_user_stats(user_id, message_count=0, voice_time=0):
-    data = load_data()
-    user_stats = data.get('users', {})
-    
-    if user_id not in user_stats:
-        user_stats[user_id] = {'messages': 0, 'voice_time': 0}
+# אתחול משתנים
+if not os.path.exists(stats_file):
+    with open(stats_file, 'w') as f:
+        json.dump({}, f)
 
-    user_stats[user_id]['messages'] += message_count
-    user_stats[user_id]['voice_time'] += voice_time
-    
-    data['users'] = user_stats
-    save_data(data)
+if not os.path.exists(tickets_file):
+    with open(tickets_file, 'w') as f:
+        json.dump({}, f)
 
-# פונקציה שמעדכנת את שמות החדרים וההגדרות שלהם
-def update_channel_settings(channel_id, name, category):
-    data = load_data()
-    channels = data.get('channels', {})
-    
-    channels[channel_id] = {'name': name, 'category': category}
-    
-    data['channels'] = channels
-    save_data(data)
-
-# פקודת סטטיסטיקות שמציגה את כמות ההודעות והזמן ב-voice של המשתמש
+# פקודת !stats - הצגת סטטיסטיקות
 @bot.command(name='stats')
 async def stats(ctx):
-    data = load_data()
-    user_stats = data.get('users', {}).get(str(ctx.author.id), {'messages': 0, 'voice_time': 0})
-    await ctx.send(f"**{ctx.author.name}**: {user_stats['messages']} הודעות, {user_stats['voice_time']} שניות ב-voice")
-
-# פקודת פתיחת טיקט
-@bot.command(name='open')
-async def open_ticket(ctx):
-    category_name = 'ticket'
-    category = discord.utils.get(ctx.guild.categories, name=category_name)
+    user_id = str(ctx.author.id)
     
+    # קריאה לסטטיסטיקות מהקובץ
+    with open(stats_file, 'r') as f:
+        stats_data = json.load(f)
+
+    user_stats = stats_data.get(user_id, {"messages": 0, "voice": 0})
+
+    await ctx.send(f"סטטיסטיקות עבור {ctx.author.name}:\n"
+                   f"הודעות: {user_stats['messages']}\n"
+                   f"זמן ב-voice: {user_stats['voice']} דקות.")
+
+# פקודת !open_ticket - יצירת טיקט חדש
+@bot.command(name='open_ticket')
+async def open_ticket(ctx):
+    category_name = 'Tickets'
+    channel_name = f'ticket-{ctx.author.name}'
+
+    # קבלת קטגוריית הטיקטים
+    category = discord.utils.get(ctx.guild.categories, name=category_name)
     if not category:
         category = await ctx.guild.create_category(category_name)
 
-    overwrites = {
-        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        ctx.author: discord.PermissionOverwrite(read_messages=True)
-    }
+    # יצירת ערוץ טיקט חדש
+    ticket_channel = await ctx.guild.create_text_channel(channel_name, category=category)
 
-    ticket_channel = await ctx.guild.create_text_channel(f'ticket-{ctx.author.name}', category=category, overwrites=overwrites)
-    await ticket_channel.send(f"שלום {ctx.author.mention}, איך אני יכול לעזור לך היום?")
-    update_channel_settings(ticket_channel.id, ticket_channel.name, category.name)
+    # שמירת הטיקט בקובץ
+    with open(tickets_file, 'r') as f:
+        tickets_data = json.load(f)
 
-# פונקציה שמבצע עדכון על הודעות שנשלחו
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
-        return
-    
-    update_user_stats(message.author.id, message_count=1)
-    await bot.process_commands(message)
+    tickets_data[channel_name] = {"user": str(ctx.author.id), "channel_id": str(ticket_channel.id)}
 
-# פונקציה שמבצע עדכון על זמן ב-voice
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if before.channel != after.channel:
-        return
-    
-    # אם הצטרף לערוץ, נתחיל למדוד את הזמן
-    if after.channel:
-        start_time = datetime.now()
-        while member.voice and member.voice.channel == after.channel:
-            await asyncio.sleep(5)
-        
-        end_time = datetime.now()
-        duration = (end_time - start_time).seconds
-        update_user_stats(member.id, voice_time=duration)
+    with open(tickets_file, 'w') as f:
+        json.dump(tickets_data, f)
 
-# טעינת הפקודות והקוגים
+    # שליחה למשתמש על פתיחת הטיקט
+    await ticket_channel.send(f"{ctx.author.mention} הטיקט שלך נפתח! תוכל להוסיף שאלות או בקשות כאן.")
+
+    await ctx.send(f"נפתח טיקט חדש עבורך: {ticket_channel.mention}")
+
+# פקודת !ping - בדיקת תגובה
+@bot.command(name='ping')
+async def ping(ctx):
+    await ctx.send('Pong!')
+
+# פקודת !help - הצגת מידע על הפקודות
+@bot.command(name='help')
+async def help_command(ctx):
+    help_message = """
+    פקודות זמינות:
+    !stats - הצגת סטטיסטיקות הודעות וזמן ב-voice.
+    !open_ticket - פתיחת טיקט חדש.
+    !ping - בדיקת תגובה.
+    !help - הצגת פקודות זמינות.
+    """
+    await ctx.send(help_message)
+
+# פונקציה לבדיקת פורטים פתוחים
+def check_ports():
+    ports_to_check = [80, 443, 8080]  # לדוגמה, פותחים את הפורטים 80, 443 ו-8080
+    open_ports = []
+
+    for port in ports_to_check:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)  # זמן המתנה לבדיקת כל פורט
+        result = sock.connect_ex(('localhost', port))  # מנסה להתחבר לפורט המקומי
+        if result == 0:
+            open_ports.append(port)
+        sock.close()
+
+    if open_ports:
+        print(f"פורטים פתוחים: {', '.join(map(str, open_ports))}")
+    else:
+        print("לא נמצאו פורטים פתוחים.")
+
+# משימה לריצה כל 5 דקות לבדוק פורטים
+@tasks.loop(minutes=5)
+async def periodic_port_check():
+    check_ports()
+
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
-    await bot.change_presence(activity=discord.Game(name="Managing your server"))
-    print(f'Bot is ready!')
-
-# הפונקציה שתוודא שהבוט מאזין לפורטים פתוחים
-def check_open_ports(host='127.0.0.1', port=80):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1)
-    result = sock.connect_ex((host, port))
-    if result == 0:
-        print(f"פורט {port} פתוח.")
-    else:
-        print(f"פורט {port} סגור.")
-    sock.close()
-
-# בדיקת פורטים כל 10 שניות (כדוגמה)
-@tasks.loop(seconds=10)
-async def check_ports():
-    print("בודק פורטים...")
-    check_open_ports(host='127.0.0.1', port=80)  # בדיקה אם הפורט 80 פתוח
-    check_open_ports(host='127.0.0.1', port=443) # בדיקה אם הפורט 443 פתוח
+    print(f'Logged in as {bot.user.name}')
+    periodic_port_check.start()  # הפעלת המשימה לבדוק פורטים כל 5 דקות
 
 # הפעלת הבוט
-check_ports.start()  # הפעלת הבדיקה על הפורטים ברקע
-bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.Grw03o.kBReOzSQTOfNVNdWIOC5CCv-1ZtzSRZfXN38bM')
+bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.Grw03o.kBReOzSQTOfNVNdWIOC5CCv-1ZtzSRZfXN38bM')  # הכנס את טוקן הבוט שלך כאן
