@@ -5,8 +5,8 @@ class HelpCommand(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command()
-    async def help(self, ctx):
+    @commands.command(name="show_help")
+    async def show_help(self, ctx):
         """מציג את כל הפקודות של הבוט"""
         embed = discord.Embed(
             title="Server Protection Commands",
