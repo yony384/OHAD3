@@ -69,6 +69,7 @@ def update_user_stats():
 async def load_cogs():
     for filename in os.listdir('./cogs'):
         if filename.endswith('.py'):
+            # טוען את כל ה-cogs בתיקיית cogs
             await client.load_extension(f'cogs.{filename[:-3]}')
 
 # אירוע כשבוט מתחבר
