@@ -144,8 +144,9 @@ async def on_voice_state_update(member, before, after):
 
 # שמירת פורט פתוח להרצת הבוט (למשל ב-Render)
 def keep_port_open():
+    port = int(os.environ.get("PORT", 8080))  # ברירת מחדל 8080 אם לא קיים
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('0.0.0.0', 8080))  # הפורט ש-"ייפתח" עבור הפלטפורמה
+    s.bind(('0.0.0.0', port))
     s.listen(1)
     while True:
         conn, addr = s.accept()
