@@ -1,109 +1,107 @@
 import discord
 from discord.ext import commands, tasks
 import json
+import os
+import aiofiles
 import asyncio
 
-# הגדרות בסיסיות
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-intents.presences = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# קובץ הנתונים
-stats_file = "stats.json"
-rooms_file = "rooms.json"
-logs_channel_id = 1234567890  # ה-ID של ערוץ הלוגים
+stats_file = "stats.json"  # שם הקובץ שיכיל את הנתונים
+log_channel_id = None  # איידי של ערוץ הלוגים (יוכל להתעדכן בהגדרות)
 
-# פונקציה לקריאה מהקובץ stats.json בצורה סינכרונית
-def load_stats():
-    try:
-        with open(stats_file, "r") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return {}
+# פוקנציה לקרוא את הנתונים מהקובץ בצורה אסינכרונית
+async def load_stats():
+    if not os.path.exists(stats_file):
+        return {}  # אם הקובץ לא קיים נחזיר מילון ריק
+    async with aiofiles.open(stats_file, "r") as file:
+        stats_data = await file.read()
+        return json.loads(stats_data)
 
-# פונקציה לשמירה לקובץ stats.json בצורה סינכרונית
-def save_stats(stats_data):
-    with open(stats_file, "w") as file:
-        json.dump(stats_data, file, indent=4)
+# פונקציה לשמור את הנתונים לקובץ בצורה אסינכרונית
+async def save_stats(data):
+    async with aiofiles.open(stats_file, "w") as file:
+        await file.write(json.dumps(data, indent=4))
 
-# פונקציה לקריאה מהקובץ rooms.json בצורה סינכרונית
-def load_rooms():
-    try:
-        with open(rooms_file, "r") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return {}
-
-# פונקציה לשמירה לקובץ rooms.json בצורה סינכרונית
-def save_rooms(rooms_data):
-    with open(rooms_file, "w") as file:
-        json.dump(rooms_data, file, indent=4)
-
-# פקודת !stats להצגת סטטיסטיקות של המשתמש
+# פקודת !stats להצגת הסטטיסטיקות
 @bot.command()
 async def stats(ctx):
-    stats_data = load_stats()
-    server_stats = stats_data.get(str(ctx.guild.id), {})
-    user_stats = server_stats.get(str(ctx.author.id), {"messages": 0, "voice_time": 0})
+    stats_data = await load_stats()
     
-    # שליחה של מידע לאמבד
-    embed = discord.Embed(title=f"סטטיסטיקות עבור {ctx.author.name}", color=discord.Color.blue())
-    embed.add_field(name="הודעות שנשלחו", value=user_stats["messages"], inline=False)
-    embed.add_field(name="זמן ב-Voice", value=f"{user_stats['voice_time']} דקות", inline=False)
+    # יצירת אמבד (Embed) להצגת הנתונים
+    embed = discord.Embed(title="Server Stats", color=discord.Color.blue())
+    
+    embed.add_field(name="Total Messages", value=str(stats_data.get("messages", 0)), inline=False)
+    embed.add_field(name="Total Time in Voice", value=str(stats_data.get("voice_time", 0)), inline=False)
     
     await ctx.send(embed=embed)
 
 # פקודת !open לפתיחת טיקט
 @bot.command()
 async def open(ctx):
-    rooms_data = load_rooms()
-    if str(ctx.guild.id) not in rooms_data:
-        rooms_data[str(ctx.guild.id)] = []
-    
-    ticket_channel = await ctx.guild.create_text_channel(f"ticket-{ctx.author.name}")
-    rooms_data[str(ctx.guild.id)].append(ticket_channel.id)
-    
-    save_rooms(rooms_data)
-    
+    # יצירת קטגוריה אם לא קיימת
+    guild = ctx.guild
+    category = discord.utils.get(guild.categories, name="ticket")
+    if not category:
+        category = await guild.create_category("ticket")
+
+    # יצירת תת-ערוץ עם כפתור לפתיחת טיקט
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        ctx.author: discord.PermissionOverwrite(read_messages=True)
+    }
+    ticket_channel = await guild.create_text_channel(f"ticket-{ctx.author.name}", category=category, overwrites=overwrites)
+    await ticket_channel.send(f"שלום {ctx.author.mention}, איך נוכל לעזור לך?")
     await ctx.send(f"טיקט נפתח בהצלחה: {ticket_channel.mention}")
 
-# הגנת שרת (הפעלת והכיבוי של הגנת שרת)
+# פקודת !enable ו-!disable להפעיל או לכבות הגנה מניוקים וריידים
 @bot.command()
 async def enable(ctx):
-    # צ'ק אם המשתמש הוא אדמין
-    if ctx.author.guild_permissions.administrator:
-        # פעולת הגנה
-        await ctx.send("הגנה הופעלה בהצלחה!")
-    else:
-        await ctx.send("אין לך הרשאות להפעיל הגנה!")
+    global log_channel_id
+    if log_channel_id is None:
+        log_channel = await ctx.guild.create_text_channel("logs")
+        log_channel_id = log_channel.id
+    await ctx.send("הגנה נגד ניוקים וריידים הופעלה.")
 
 @bot.command()
 async def disable(ctx):
-    # צ'ק אם המשתמש הוא אדמין
-    if ctx.author.guild_permissions.administrator:
-        # השבתת הגנה
-        await ctx.send("הגנה הושבתה בהצלחה!")
-    else:
-        await ctx.send("אין לך הרשאות להשבית את ההגנה!")
+    global log_channel_id
+    if log_channel_id:
+        log_channel = ctx.guild.get_channel(log_channel_id)
+        if log_channel:
+            await log_channel.delete()
+    log_channel_id = None
+    await ctx.send("הגנה נגד ניוקים וריידים כובתה.")
 
-# פונקציה למעקב אחר זמן ב-Voice
+# פונקציה להוסיף הודעות לסטטיסטיקות
+async def update_message_stats(user_id):
+    stats_data = await load_stats()
+    if user_id not in stats_data:
+        stats_data[user_id] = {"messages": 0, "voice_time": 0}
+    stats_data[user_id]["messages"] += 1
+    await save_stats(stats_data)
+
+# פונקציה לניהול ניוקים וריידים
 @bot.event
-async def on_voice_state_update(member, before, after):
-    if before.channel is None and after.channel is not None:
-        # כשמצטרפים לערוץ Voice
-        pass
-    elif before.channel is not None and after.channel is None:
-        # כשעוזבים את ערוץ ה-Voice
-        stats_data = load_stats()
-        server_stats = stats_data.setdefault(str(member.guild.id), {})
-        user_stats = server_stats.setdefault(str(member.id), {"messages": 0, "voice_time": 0})
-        
-        voice_time = (after.channel.connect_time - before.channel.connect_time).total_seconds() // 60
-        user_stats["voice_time"] += int(voice_time)
-        
-        save_stats(stats_data)
+async def on_member_join(member):
+    if log_channel_id:
+        log_channel = member.guild.get_channel(log_channel_id)
+        if log_channel:
+            await log_channel.send(f"User {member} joined the server.")
 
-# ריצה של הבוט
+@bot.event
+async def on_member_remove(member):
+    if log_channel_id:
+        log_channel = member.guild.get_channel(log_channel_id)
+        if log_channel:
+            await log_channel.send(f"User {member} left the server.")
+
+# התחברות לבוט
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+
+# התחלת הבוט
 bot.run("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA")
