@@ -33,6 +33,20 @@ def update_stats():
     with open(stats_file, 'w') as f:
         json.dump(stats, f)
 
+# פונקציה שממירה שניות לשעות ודקות בעברית
+def format_voice_time(seconds):
+    minutes = seconds // 60
+    hours = minutes // 60
+    remaining_minutes = minutes % 60
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours} {'שעה' if hours == 1 else 'שעות'}")
+    if remaining_minutes > 0:
+        parts.append(f"{remaining_minutes} {'דקה' if remaining_minutes == 1 else 'דקות'}")
+
+    return ' ו-'.join(parts) if parts else '0 דקות'
+
 # פקודת !stats להציג את הסטטיסטיקות
 @bot.command(name='stats')
 async def stats(ctx):
@@ -49,7 +63,7 @@ async def stats(ctx):
         color=discord.Color.blue()
     )
     embed.add_field(name="הודעות שנשלחו", value=str(guild_stats['messages']), inline=False)
-    embed.add_field(name="זמן ב-voice (בשניות)", value=str(guild_stats['voice_time']), inline=False)
+    embed.add_field(name="זמן ב-voice", value=format_voice_time(guild_stats['voice_time']), inline=False)
 
     await ctx.send(embed=embed)
 
@@ -79,7 +93,7 @@ async def show_help_command(ctx):
     !ping - בדיקת תגובה.
     !help - הצגת פקודות זמינות.
     """
-    await ctx.send(show_help_message)
+    await ctx.send(help_message)
 
 # פקודת !ping - לבדוק שהבוט פועל
 @bot.command(name='ping')
@@ -127,6 +141,8 @@ async def on_voice_state_update(member, before, after):
     stats[str(member.guild.id)] = guild_stats
     with open(stats_file, 'w') as f:
         json.dump(stats, f)
+
+# שמירת פורט פתוח להרצת הבוט (למשל ב-Render)
 def keep_port_open():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(('0.0.0.0', 8080))  # הפורט ש-"ייפתח" עבור הפלטפורמה
@@ -137,5 +153,6 @@ def keep_port_open():
 
 # הפעלת השרת ברקע (thread)
 threading.Thread(target=keep_port_open, daemon=True).start()
+
 # הפעלת הבוט
 bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GhIkkz.PTGoaidqLNiSapgFwFaFveKMy0819uZDgdxUAA')
