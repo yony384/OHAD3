@@ -4,6 +4,7 @@ import json
 import os
 import asyncio
 from datetime import datetime
+import socket
 
 # יצירת אובייקט של הבוט עם פריפיקס
 intents = discord.Intents.default()
@@ -107,5 +108,24 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name="Managing your server"))
     print(f'Bot is ready!')
 
+# הפונקציה שתוודא שהבוט מאזין לפורטים פתוחים
+def check_open_ports(host='127.0.0.1', port=80):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1)
+    result = sock.connect_ex((host, port))
+    if result == 0:
+        print(f"פורט {port} פתוח.")
+    else:
+        print(f"פורט {port} סגור.")
+    sock.close()
+
+# בדיקת פורטים כל 10 שניות (כדוגמה)
+@tasks.loop(seconds=10)
+async def check_ports():
+    print("בודק פורטים...")
+    check_open_ports(host='127.0.0.1', port=80)  # בדיקה אם הפורט 80 פתוח
+    check_open_ports(host='127.0.0.1', port=443) # בדיקה אם הפורט 443 פתוח
+
 # הפעלת הבוט
-bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GyYtye.g-4PNwaC4Cpkq8wuDFCueWL-5n081x_3GX-BUw')
+check_ports.start()  # הפעלת הבדיקה על הפורטים ברקע
+bot.run('MTM2ODQ5NDk5MTM0MDczMjQ2Nw.Grw03o.kBReOzSQTOfNVNdWIOC5CCv-1ZtzSRZfXN38bM')
