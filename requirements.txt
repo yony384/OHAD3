@@ -1,6 +1,3 @@
 discord.py==2.0.0
 aiohttp==3.11.18
 aiofiles
-datetime
-os
-time
