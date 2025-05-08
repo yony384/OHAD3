@@ -6,6 +6,9 @@ import datetime
 from collections import defaultdict
 import os
 import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -394,4 +397,5 @@ async def on_ready():
     check_reset.start()
     print(f'{bot.user} התחבר בהצלחה!')
 
-bot.run("MTM2ODQ5NDk5MTM0MDczMjQ2Nw.GNVDsQ.mGn_jND9QKG-g4b_BdWUZarw7PzFi5HYAjFeSs")
+bot.run(os.getenv("DISCORD_BOT_TOKEN"))
+
